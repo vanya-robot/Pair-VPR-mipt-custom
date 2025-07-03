@@ -59,14 +59,26 @@ class ITLPEvaluator:
         with torch.no_grad():
             for batch in tqdm(db_loader, desc="Processing database"):
                 images, positions = batch
-                _, descriptors = self.model(images.to(self.device), None, mode='global')
-                db_descriptors.append(descriptors.cpu())
-                db_positions.append(positions)
+                # Если используем обе камеры, images будет иметь размер [batch, 2, C, H, W]
+                if self.cfg.eval.use_both_cams:
+                    # Обрабатываем каждую камеру отдельно
+                    for cam_idx in range(images.size(1)):
+                        cam_images = images[:, cam_idx]  # [batch, C, H, W]
+                        _, descriptors = self.model(cam_images.to(self.device), None, mode='global')
+                        db_descriptors.append(descriptors.cpu())
+                    db_positions.append(positions.repeat_interleave(2, dim=0))  # Дублируем позиции для двух камер
+                else:
+                    # Только front камера
+                    _, descriptors = self.model(images.to(self.device), None, mode='global')
+                    db_descriptors.append(descriptors.cpu())
+                    db_positions.append(positions)
+        
+        if not db_descriptors:
+            raise RuntimeError("No descriptors generated - check your data pipeline")
         
         db_descriptors = torch.cat(db_descriptors, dim=0).numpy()
         db_positions = torch.cat(db_positions, dim=0).numpy()
         
-        # Создаем FAISS индекс
         index = faiss.IndexFlatL2(db_descriptors.shape[1])
         index.add(db_descriptors)
         
@@ -77,24 +89,22 @@ class ITLPEvaluator:
         
         all_predictions = []
         sequence_buffer = []
-        window_size = self.cfg['eval']['sequence_window']
-        use_both_cams = self.cfg['eval']['use_both_cams']
+        window_size = self.cfg.eval.sequence_window
         
         with torch.no_grad():
             for batch in tqdm(query_loader, desc="Processing queries"):
                 images, _ = batch
                 
-                # Добавляем в буфер
-                if use_both_cams:
-                    # Обрабатываем обе камеры как отдельные кадры
-                    for img in images:  # images содержит [front, back] камеры
-                        sequence_buffer.append(img.to(self.device))
+                # Обрабатываем камеры
+                if self.cfg.eval.use_both_cams:
+                    # Добавляем обе камеры в буфер
+                    for cam_idx in range(images.size(1)):
+                        sequence_buffer.append(images[:, cam_idx].squeeze(0).to(self.device))
                 else:
-                    # Только front камера
-                    sequence_buffer.append(images[0].to(self.device))
+                    sequence_buffer.append(images.squeeze(0).to(self.device))
                 
                 # Поддерживаем размер окна
-                if len(sequence_buffer) > window_size * (2 if use_both_cams else 1):
+                if len(sequence_buffer) > window_size * (2 if self.cfg.eval.use_both_cams else 1):
                     sequence_buffer.pop(0)
                 
                 # Candidate Pool Fusion
@@ -102,16 +112,15 @@ class ITLPEvaluator:
                 for frame in sequence_buffer:
                     _, desc = self.model(frame.unsqueeze(0), None, mode='global')
                     _, candidates = index.search(desc.cpu().numpy(), 
-                                               self.cfg['eval']['refinetopcands'])
+                                            self.cfg.eval.refinetopcands)
                     candidate_pool.extend(candidates[0])
                 
                 # Удаляем дубликаты и выбираем лучший
                 unique_candidates = list(dict.fromkeys(candidate_pool))
                 if unique_candidates:
-                    # Выбираем кандидата с минимальным средним расстоянием
                     best_candidate = self.select_best_candidate(sequence_buffer, 
-                                                              unique_candidates, 
-                                                              index)
+                                                            unique_candidates, 
+                                                            index)
                     all_predictions.append(best_candidate)
                 else:
                     all_predictions.append(0)
@@ -198,15 +207,15 @@ class ITLPDataset(torch.utils.data.Dataset):
         sample = self.samples[idx]
         
         # Загрузка изображений
-        front_img = Image.open(sample['front'])
+        front_img = Image.open(sample['front']).convert('RGB')
         front_img = self.transform(front_img)
         
         if self.use_both_cams:
-            back_img = Image.open(sample['back'])
+            back_img = Image.open(sample['back']).convert('RGB')
             back_img = self.transform(back_img)
-            images = torch.stack([front_img, back_img])
+            images = torch.stack([front_img, back_img])  # [2, C, H, W]
         else:
-            images = front_img.unsqueeze(0)
+            images = front_img  # [C, H, W]
         
         position = torch.tensor(sample['position'], dtype=torch.float32)
         return images, position
