@@ -177,43 +177,9 @@ class ITLPEvaluator:
         return query_index, query_positions, query_dense_features
 
     def compare_with_database(self, query_descriptors, query_dense, db_index, db_dense_features, top_k=250):
-        """Сравнивает запросы с базой данных"""
-        all_predictions = []
-        
-        # Грубый поиск по глобальным дескрипторам
-        _, top_k_indices = db_index.search(query_descriptors, top_k)
-        
-        with torch.no_grad():
-            for q_idx in tqdm(range(len(query_descriptors)), desc="Comparing queries with database"):
-                q_dense = query_dense[q_idx].unsqueeze(0).to(self.device)
-                best_score = -float('inf')
-                best_candidate = 0
-                
-                # Re-ranking с использованием dense features
-                for db_idx in top_k_indices[q_idx]:
-                    db_dense = db_dense_features[db_idx].unsqueeze(0).to(self.device)
-                    
-                    # Подготовка входных данных для модели
-                    # Добавляем dimension для batch и sequence
-                    q_input = q_dense.unsqueeze(0)  # [1, 1, num_patches, dim]
-                    db_input = db_dense.unsqueeze(0)  # [1, 1, num_patches, dim]
-                    
-                    try:
-                        # Двунаправленное сравнение
-                        score1 = self.model(q_input, db_input, mode="pairvpr")
-                        score2 = self.model(db_input, q_input, mode="pairvpr")
-                        current_score = max(score1.item(), score2.item())
-                    except Exception as e:
-                        print(f"Error during comparison: {e}")
-                        current_score = 0
-                    
-                    if current_score > best_score:
-                        best_score = current_score
-                        best_candidate = db_idx
-                
-                all_predictions.append(best_candidate)
-        
-        return all_predictions
+        """Использует только глобальные дескрипторы"""
+        _, predictions = db_index.search(query_descriptors, 1)
+        return predictions.flatten().tolist()
     
     def create_dataloader(self, data_path, is_database):
         dataset = ITLPDataset(
