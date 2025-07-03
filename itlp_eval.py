@@ -178,8 +178,8 @@ class ITLPDataset(torch.utils.data.Dataset):
         # Фильтрация существующих изображений
         self.samples = []
         for _, row in self.df.iterrows():
-            front_path = self.root_path / "front_cam" / f"{row['front_cam_ts']}.jpg"
-            back_path = self.root_path / "back_cam" / f"{row['back_cam_ts']}.jpg"
+            front_path = self.root_path / "front_cam" / f"{str(row['front_cam_ts'])}.jpg"
+            back_path = self.root_path / "back_cam" / f"{str(row['back_cam_ts'])}.jpg"
             
             self.samples.append({
                 'front': str(front_path),
