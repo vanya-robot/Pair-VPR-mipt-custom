@@ -193,13 +193,22 @@ class ITLPEvaluator:
                 for db_idx in top_k_indices[q_idx]:
                     db_dense = db_dense_features[db_idx].unsqueeze(0).to(self.device)
                     
-                    # Двунаправленное сравнение
-                    score1 = self.model(q_dense, db_dense, mode="pairvpr")
-                    score2 = self.model(db_dense, q_dense, mode="pairvpr")
-                    total_score = max(score1.item(), score2.item())
+                    # Подготовка входных данных для модели
+                    # Добавляем dimension для batch и sequence
+                    q_input = q_dense.unsqueeze(0)  # [1, 1, num_patches, dim]
+                    db_input = db_dense.unsqueeze(0)  # [1, 1, num_patches, dim]
                     
-                    if total_score > best_score:
-                        best_score = total_score
+                    try:
+                        # Двунаправленное сравнение
+                        score1 = self.model(q_input, db_input, mode="pairvpr")
+                        score2 = self.model(db_input, q_input, mode="pairvpr")
+                        current_score = max(score1.item(), score2.item())
+                    except Exception as e:
+                        print(f"Error during comparison: {e}")
+                        current_score = 0
+                    
+                    if current_score > best_score:
+                        best_score = current_score
                         best_candidate = db_idx
                 
                 all_predictions.append(best_candidate)
