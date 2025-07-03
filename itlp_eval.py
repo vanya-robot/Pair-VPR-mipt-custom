@@ -51,23 +51,22 @@ class ITLPEvaluator:
         ])
     
     def process_database(self, db_path, save_path):
-        # Пути для сохранения
         save_path = Path(save_path)
-
         index_path = save_path / "faiss_index.bin"
         positions_path = save_path / "positions.npy"
+        dense_features_path = save_path / "dense_features.pt"
         
-        # Пытаемся загрузить сохраненные данные
-        if index_path.exists() and positions_path.exists():
-            print("Loading precomputed index and positions...")
+        if all(p.exists() for p in [index_path, positions_path, dense_features_path]):
+            print("Loading precomputed database features...")
             index = faiss.read_index(str(index_path))
             db_positions = np.load(positions_path)
-            return index, db_positions
+            db_dense_features = torch.load(dense_features_path)
+            return index, db_positions, db_dense_features
         
-        # Если сохраненных данных нет - вычисляем заново
         db_loader = self.create_dataloader(db_path, is_database=True)
         
         db_descriptors = []
+        db_dense_features = []
         db_positions = []
         
         with torch.no_grad():
@@ -76,28 +75,28 @@ class ITLPEvaluator:
                 if self.cfg.eval.use_both_cams:
                     for cam_idx in range(images.size(1)):
                         cam_images = images[:, cam_idx]
-                        _, descriptors = self.model(cam_images.to(self.device), None, mode='global')
+                        dense, descriptors = self.model(cam_images.to(self.device), None, mode='global')
                         db_descriptors.append(descriptors.cpu())
+                        db_dense_features.append(dense.cpu())
                     db_positions.append(positions.repeat_interleave(2, dim=0))
                 else:
-                    _, descriptors = self.model(images.to(self.device), None, mode='global')
+                    dense, descriptors = self.model(images.to(self.device), None, mode='global')
                     db_descriptors.append(descriptors.cpu())
+                    db_dense_features.append(dense.cpu())
                     db_positions.append(positions)
-        
-        if not db_descriptors:
-            raise RuntimeError("No descriptors generated - check your data pipeline")
         
         db_descriptors = torch.cat(db_descriptors, dim=0).numpy()
         db_positions = torch.cat(db_positions, dim=0).numpy()
+        db_dense_features = torch.cat(db_dense_features, dim=0)
         
-        # Создаем и сохраняем индекс
         index = faiss.IndexFlatL2(db_descriptors.shape[1])
         index.add(db_descriptors)
         
-        # Сохраняем индекс и позиции
-        self.save_database_index(index, db_positions, index_path, positions_path)
+        faiss.write_index(index, str(index_path))
+        np.save(positions_path, db_positions)
+        torch.save(db_dense_features, dense_features_path)
         
-        return index, db_positions
+        return index, db_positions, db_dense_features
 
     def save_database_index(self, index, positions, index_path, positions_path):
         """Сохраняет индекс FAISS и позиции в файлы"""
@@ -125,75 +124,69 @@ class ITLPEvaluator:
         print("Database index successfully loaded")
         return index, positions
     
-    def process_queries(self, query_path, index, db_positions):
+    def process_queries(self, query_path, index, db_positions, db_dense_features):
         query_loader = self.create_dataloader(query_path, is_database=False)
-        
-        # Загружаем все дескрипторы базы данных для re-ranking
-        db_descriptors = index.reconstruct_n(0, index.ntotal)
-        
         all_predictions = []
         sequence_buffer = []
-        window_size = self.cfg.eval.sequence_window
+        
+        # Размер последовательности (3 кадра * 2 камеры = 6 изображений)
+        seq_length = 3 * (2 if self.cfg.eval.use_both_cams else 1)
         
         with torch.no_grad():
             for batch in tqdm(query_loader, desc="Processing queries"):
                 images, _ = batch
-                
-                # Обрабатываем камеры
                 current_frames = []
+                
                 if self.cfg.eval.use_both_cams:
-                    # Обрабатываем каждую камеру отдельно
                     for cam_idx in range(images.size(1)):
-                        # Берем кадр и добавляем размерность батча
-                        frame = images[:, cam_idx]  # [B, C, H, W] - уже правильная размерность
+                        frame = images[:, cam_idx]  # [B, C, H, W]
                         current_frames.append(frame.to(self.device))
                 else:
-                    frame = images  # [B, C, H, W]
-                    current_frames.append(frame.to(self.device))
+                    current_frames.append(images.to(self.device))
                 
                 # Обновляем буфер последовательности
                 sequence_buffer.extend(current_frames)
-                if len(sequence_buffer) > window_size * (2 if self.cfg.eval.use_both_cams else 1):
-                    sequence_buffer = sequence_buffer[-(window_size * (2 if self.cfg.eval.use_both_cams else 1)):]
+                if len(sequence_buffer) > seq_length:
+                    sequence_buffer = sequence_buffer[-seq_length:]
                 
-                # Получаем дескрипторы для всей последовательности
-                seq_descriptors = []
+                # Получаем признаки для всей последовательности
+                seq_global_descs = []
+                seq_dense_features = []
+                
                 for frame in sequence_buffer:
-                    # frame уже имеет размер [B, C, H, W]
-                    _, global_desc = self.model(frame, None, mode='global')
-                    seq_descriptors.append(global_desc)
+                    dense, global_desc = self.model(frame, None, mode='global')
+                    seq_global_descs.append(global_desc)
+                    seq_dense_features.append(dense)
                 
-                # Усредняем дескрипторы последовательности
-                avg_seq_descriptor = torch.mean(torch.stack(seq_descriptors), dim=0)
+                # Усредняем глобальные дескрипторы для грубого поиска
+                avg_global_desc = torch.mean(torch.stack(seq_global_descs), dim=0)
                 
-                # Грубый поиск по глобальному дескриптору
-                _, top_k_indices = index.search(avg_seq_descriptor.cpu().numpy(), 
-                                            self.cfg.eval.refinetopcands)
+                # Грубый поиск по глобальным дескрипторам
+                _, top_k_indices = index.search(avg_global_desc.cpu().numpy(), 
+                                             self.cfg.eval.refinetopcands)
                 
-                # Re-ranking с Pair-VPR
+                # Re-ranking с использованием dense features
                 best_score = -float('inf')
                 best_candidate = 0
                 
                 for db_idx in top_k_indices[0]:
-                    # Получаем дескриптор из базы
-                    db_desc = torch.from_numpy(db_descriptors[db_idx]).unsqueeze(0).to(self.device)
+                    db_dense = db_dense_features[db_idx].unsqueeze(0).to(self.device)
                     
-                    # Сравниваем с последовательностью
                     total_score = 0.0
-                    for seq_desc in seq_descriptors:
-                        # Вычисляем score через Pair-VPR
-                        score = self.model(seq_desc, db_desc, mode="pairvpr")
-                        total_score += score.item()
+                    for seq_dense in seq_dense_features:
+                        # Сравниваем query и candidate в обоих направлениях
+                        score1 = self.model(seq_dense, db_dense, mode="pairvpr")
+                        score2 = self.model(db_dense, seq_dense, mode="pairvpr")
+                        total_score += (score1.item() + score2.item()) / 2
                     
-                    avg_score = total_score / len(seq_descriptors)
+                    avg_score = total_score / len(seq_dense_features)
                     
                     if avg_score > best_score:
                         best_score = avg_score
                         best_candidate = db_idx
                 
-                # Для всех кадров в текущем батче используем лучший кандидат
-                for _ in current_frames:
-                    all_predictions.append(best_candidate)
+                # Сохраняем предсказания для всех кадров в текущем батче
+                all_predictions.extend([best_candidate] * len(current_frames))
         
         return all_predictions
     
