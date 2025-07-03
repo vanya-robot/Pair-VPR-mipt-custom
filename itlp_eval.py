@@ -224,16 +224,15 @@ class ITLPEvaluator:
             num_workers=4
         )
     
-    def save_predictions(self, predictions, save_path):
-        with open(save_path, 'w') as f:
+    def save_predictions(self, predictions, pred_path):
+        with open(pred_path, 'w') as f:
             f.write("idx\n")
             for pred in predictions:
                 f.write(f"{pred}\n")
     
     def evaluate(self, db_path, query_path, save_path):
         save_path = Path(save_path)
-
-        save_path = save_path / 'submission.csv'
+        pred_path = save_path / 'submission.csv'
 
         # Обработка базы данных
         index, db_positions = self.process_database(db_path, save_path)
@@ -242,9 +241,9 @@ class ITLPEvaluator:
         predictions = self.process_queries(query_path, index, db_positions)
         
         # Сохранение предсказаний
-        self.save_predictions(predictions, save_path)
+        self.save_predictions(predictions, pred_path)
         
-        print(f"Predictions saved to {save_path}")
+        print(f"Predictions saved to {pred_path}")
 
 class ITLPDataset(torch.utils.data.Dataset):
     def __init__(self, root_path, is_database, transform, use_both_cams):
