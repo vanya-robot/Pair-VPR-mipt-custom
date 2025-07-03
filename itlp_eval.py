@@ -50,7 +50,7 @@ class ITLPEvaluator:
                        std=[0.229, 0.224, 0.225])
         ])
     
-    def process_database(self, db_path):
+    def process_database(self, db_path, save_path):
         # Пути для сохранения
         save_path = Path(save_path)
 
@@ -95,18 +95,12 @@ class ITLPEvaluator:
         index.add(db_descriptors)
         
         # Сохраняем индекс и позиции
-        self.save_database_index(index, db_positions, db_path)
+        self.save_database_index(index, db_positions, index_path, positions_path)
         
         return index, db_positions
 
-    def save_database_index(self, index, positions, db_path):
+    def save_database_index(self, index, positions, index_path, positions_path):
         """Сохраняет индекс FAISS и позиции в файлы"""
-        db_path = Path(db_path)
-        db_path.mkdir(parents=True, exist_ok=True)
-        save_path = Path(save_path)
-        
-        index_path = save_path / "faiss_index.bin"
-        positions_path = save_path / "positions.npy"
         
         print(f"Saving FAISS index to {index_path}...")
         faiss.write_index(index, str(index_path))
@@ -116,13 +110,8 @@ class ITLPEvaluator:
         
         print("Database index successfully saved")
 
-    def load_database_index(self, db_path):
+    def load_database_index(self, index_path, positions_path):
         """Загружает сохраненный индекс FAISS и позиции"""
-        db_path = Path(db_path)
-        save_path = Path(save_path)
-
-        index_path = save_path / "faiss_index.bin"
-        positions_path = save_path / "positions.npy"
         
         if not (index_path.exists() and positions_path.exists()):
             return None, None
@@ -247,7 +236,7 @@ class ITLPEvaluator:
         save_path = save_path / 'submission.csv'
 
         # Обработка базы данных
-        index, db_positions = self.process_database(db_path)
+        index, db_positions = self.process_database(db_path, save_path)
         
         # Обработка запросов с Candidate Pool Fusion
         predictions = self.process_queries(query_path, index, db_positions)
