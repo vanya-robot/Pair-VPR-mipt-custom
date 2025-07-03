@@ -173,7 +173,11 @@ class ITLPDataset(torch.utils.data.Dataset):
         self.use_both_cams = use_both_cams
         
         # Загрузка метаданных
-        self.df = pd.read_csv(self.root_path / "track.csv")
+        self.df = pd.read_csv(self.root_path / "track.csv", dtype={'timestamp': 'string', 
+                                                                   'front_cam_ts': 'string', 
+                                                                   'back_cam_ts': 'string',
+                                                                   'tx': 'float64',
+                                                                   'ty': 'float64'})
         
         # Фильтрация существующих изображений
         self.samples = []
