@@ -142,13 +142,14 @@ class ITLPEvaluator:
                 # Обрабатываем камеры
                 current_frames = []
                 if self.cfg.eval.use_both_cams:
-                    # Добавляем обе камеры как отдельные кадры
+                    # Обрабатываем каждую камеру отдельно
                     for cam_idx in range(images.size(1)):
-                        frame = images[:, cam_idx].squeeze(0).to(self.device)
-                        current_frames.append(frame)
+                        # Берем кадр и добавляем размерность батча
+                        frame = images[:, cam_idx].unsqueeze(0)  # [1, C, H, W]
+                        current_frames.append(frame.to(self.device))
                 else:
-                    frame = images.squeeze(0).to(self.device)
-                    current_frames.append(frame)
+                    frame = images.unsqueeze(0)  # [1, C, H, W]
+                    current_frames.append(frame.to(self.device))
                 
                 # Обновляем буфер последовательности
                 sequence_buffer.extend(current_frames)
@@ -158,7 +159,8 @@ class ITLPEvaluator:
                 # Получаем дескрипторы для всей последовательности
                 seq_descriptors = []
                 for frame in sequence_buffer:
-                    _, global_desc = self.model(frame.unsqueeze(0), None, mode='global')
+                    # frame уже имеет размер [1, C, H, W]
+                    _, global_desc = self.model(frame, None, mode='global')
                     seq_descriptors.append(global_desc)
                 
                 # Усредняем дескрипторы последовательности
