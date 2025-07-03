@@ -181,12 +181,11 @@ class ITLPDataset(torch.utils.data.Dataset):
             front_path = self.root_path / "front_cam" / f"{row['front_cam_ts']}.jpg"
             back_path = self.root_path / "back_cam" / f"{row['back_cam_ts']}.jpg"
             
-            if front_path.exists() and (not use_both_cams or back_path.exists()):
-                self.samples.append({
-                    'front': str(front_path),
-                    'back': str(back_path),
-                    'position': [row['tx'], row['ty']]
-                })
+            self.samples.append({
+                'front': str(front_path),
+                'back': str(back_path),
+                'position': [row['tx'], row['ty']]
+            })
     
     def __len__(self):
         return len(self.samples)
