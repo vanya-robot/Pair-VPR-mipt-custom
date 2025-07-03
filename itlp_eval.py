@@ -11,6 +11,7 @@ from collections import defaultdict
 from PIL import Image
 import pandas as pd
 from pairvpr.models.pairvpr import PairVPRNet
+from omegaconf import OmegaConf
 
 def parse_args():
     parser = argparse.ArgumentParser(description='ITLP Dataset Evaluator')
@@ -32,8 +33,7 @@ class ITLPEvaluator:
         self.transform = self.get_transform()
         
     def load_config(self, config_path):
-        with open(config_path) as f:
-            cfg = yaml.safe_load(f)
+        cfg = OmegaConf.load(config_path)
         return cfg
     
     def load_model(self):
