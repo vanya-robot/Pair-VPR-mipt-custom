@@ -1,5 +1,6 @@
 import os
 import numpy as np
+import argparse
 import torch
 from tqdm import tqdm
 import faiss
@@ -10,6 +11,18 @@ from collections import defaultdict
 from PIL import Image
 import pandas as pd
 from pairvpr.models.pairvpr import PairVPRNet
+
+def parse_args():
+    parser = argparse.ArgumentParser(description='ITLP Dataset Evaluator')
+    parser.add_argument('--config', type=str, required=True, 
+                      help='Path to config file')
+    parser.add_argument('--db_path', type=str, required=True,
+                      help='Path to database directory (07_2023-10-04-day)')
+    parser.add_argument('--query_path', type=str, required=True,
+                      help='Path to queries directory (08_2023-10-11-night)')
+    parser.add_argument('--output', type=str, default='submission.csv',
+                      help='Output file path')
+    return parser.parse_args()
 
 class ITLPEvaluator:
     def __init__(self, config_path):
@@ -196,6 +209,14 @@ class ITLPDataset(torch.utils.data.Dataset):
         return images, position
 
 if __name__ == "__main__":
-    evaluator = ITLPEvaluator(config_path="path/to/config_itlp.yaml")
+    args = parse_args()
 
-    evaluator.evaluate(db_path="/path/to/07_2023-10-04-day", query_path="/path/to/08_2023-10-11-night", output_path="submission.csv")
+    if not os.path.exists(args.config):
+        raise FileNotFoundError(f"Config file not found at: {args.config}")
+    
+    evaluator = ITLPEvaluator(config_path=args.config)
+    evaluator.evaluate(
+        db_path=args.db_path,
+        query_path=args.query_path,
+        output_path=args.output
+    )
