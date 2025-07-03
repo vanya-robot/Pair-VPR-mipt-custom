@@ -1,0 +1,27 @@
+encoder:
+  model_name: "dinov2_vitb14_reg"
+  num_trainable_blocks: 6
+  return_classtok: true
+decoder:
+  dec_embed_dim: 768
+  dec_num_heads: 16
+  dec_depth: 12
+  mlp_ratio: 4
+masking:
+  mask_ratio: 0.9
+  patch_size: 14
+augmentation:
+  img_res: 322
+train:
+  classtoken: true
+  random: false
+globaldesc:
+  dim: 512
+eval:
+  refinetopcands: 200
+  memoryeffmode: false
+  sequence_window: 3  # Размер окна для последовательности
+  use_both_cams: true  # Использовать обе камеры
+  batch_size: 32
+dataset_locations:
+  itlp: "itlp_dataset"  # Фиктивный путь, будет переопределен
