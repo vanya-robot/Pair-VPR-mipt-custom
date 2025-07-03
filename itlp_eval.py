@@ -196,6 +196,6 @@ class ITLPDataset(torch.utils.data.Dataset):
         return images, position
 
 if __name__ == "__main__":
-    evaluator = ITLPEvaluator("pairvpr/configs/config_itlp.yaml")
+    evaluator = ITLPEvaluator(config_path="path/to/config_itlp.yaml")
 
     evaluator.evaluate(db_path="/path/to/07_2023-10-04-day", query_path="/path/to/08_2023-10-11-night", output_path="submission.csv")
