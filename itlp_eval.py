@@ -200,10 +200,10 @@ class ITLPEvaluator:
             best_match1 = 0
             for db_idx in top1_indices[0]:
                 print(db_dense_features[db_idx].shape)
-                db_dense = db_dense_features[db_idx].unsqueeze(0).to(self.device)
+                db_dense = db_dense_features[db_idx].to(self.device)
                 print('db after:', db_dense.shape)
                 print(dense2.shape)
-                current_dense = dense1.unsqueeze(0).to(self.device)
+                current_dense = dense1.to(self.device)
                 print('cur after:', current_dense.shape)
                 
                 score1 = self.model(current_dense, db_dense, mode="pairvpr")
@@ -219,9 +219,9 @@ class ITLPEvaluator:
             best_match2 = 0
             for db_idx in top2_indices[0]:
                 
-                db_dense = db_dense_features[db_idx].unsqueeze(0).to(self.device)
+                db_dense = db_dense_features[db_idx].to(self.device)
 
-                current_dense = dense2.unsqueeze(0).to(self.device)
+                current_dense = dense2.to(self.device)
 
                 
                 score1 = self.model(current_dense, db_dense, mode="pairvpr")
