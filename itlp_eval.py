@@ -51,6 +51,18 @@ class ITLPEvaluator:
         ])
     
     def process_database(self, db_path):
+        # Пути для сохранения
+        index_path = Path(db_path) / "faiss_index.bin"
+        positions_path = Path(db_path) / "positions.npy"
+        
+        # Пытаемся загрузить сохраненные данные
+        if index_path.exists() and positions_path.exists():
+            print("Loading precomputed index and positions...")
+            index = faiss.read_index(str(index_path))
+            db_positions = np.load(positions_path)
+            return index, db_positions
+        
+        # Если сохраненных данных нет - вычисляем заново
         db_loader = self.create_dataloader(db_path, is_database=True)
         
         db_descriptors = []
@@ -59,16 +71,13 @@ class ITLPEvaluator:
         with torch.no_grad():
             for batch in tqdm(db_loader, desc="Processing database"):
                 images, positions = batch
-                # Если используем обе камеры, images будет иметь размер [batch, 2, C, H, W]
                 if self.cfg.eval.use_both_cams:
-                    # Обрабатываем каждую камеру отдельно
                     for cam_idx in range(images.size(1)):
-                        cam_images = images[:, cam_idx]  # [batch, C, H, W]
+                        cam_images = images[:, cam_idx]
                         _, descriptors = self.model(cam_images.to(self.device), None, mode='global')
                         db_descriptors.append(descriptors.cpu())
-                    db_positions.append(positions.repeat_interleave(2, dim=0))  # Дублируем позиции для двух камер
+                    db_positions.append(positions.repeat_interleave(2, dim=0))
                 else:
-                    # Только front камера
                     _, descriptors = self.model(images.to(self.device), None, mode='global')
                     db_descriptors.append(descriptors.cpu())
                     db_positions.append(positions)
@@ -79,13 +88,54 @@ class ITLPEvaluator:
         db_descriptors = torch.cat(db_descriptors, dim=0).numpy()
         db_positions = torch.cat(db_positions, dim=0).numpy()
         
+        # Создаем и сохраняем индекс
         index = faiss.IndexFlatL2(db_descriptors.shape[1])
         index.add(db_descriptors)
         
+        # Сохраняем индекс и позиции
+        self.save_database_index(index, db_positions, db_path)
+        
         return index, db_positions
+
+    def save_database_index(self, index, positions, db_path):
+        """Сохраняет индекс FAISS и позиции в файлы"""
+        db_path = Path(db_path)
+        db_path.mkdir(parents=True, exist_ok=True)
+        
+        index_path = db_path / "faiss_index.bin"
+        positions_path = db_path / "positions.npy"
+        
+        print(f"Saving FAISS index to {index_path}...")
+        faiss.write_index(index, str(index_path))
+        
+        print(f"Saving positions to {positions_path}...")
+        np.save(positions_path, positions)
+        
+        print("Database index successfully saved")
+
+    def load_database_index(self, db_path):
+        """Загружает сохраненный индекс FAISS и позиции"""
+        db_path = Path(db_path)
+        index_path = db_path / "faiss_index.bin"
+        positions_path = db_path / "positions.npy"
+        
+        if not (index_path.exists() and positions_path.exists()):
+            return None, None
+        
+        print(f"Loading FAISS index from {index_path}...")
+        index = faiss.read_index(str(index_path))
+        
+        print(f"Loading positions from {positions_path}...")
+        positions = np.load(positions_path)
+        
+        print("Database index successfully loaded")
+        return index, positions
     
     def process_queries(self, query_path, index, db_positions):
         query_loader = self.create_dataloader(query_path, is_database=False)
+        
+        # Загружаем все дескрипторы базы данных для re-ranking
+        db_descriptors = index.reconstruct_n(0, index.ntotal)
         
         all_predictions = []
         sequence_buffer = []
@@ -96,34 +146,58 @@ class ITLPEvaluator:
                 images, _ = batch
                 
                 # Обрабатываем камеры
+                current_frames = []
                 if self.cfg.eval.use_both_cams:
-                    # Добавляем обе камеры в буфер
+                    # Добавляем обе камеры как отдельные кадры
                     for cam_idx in range(images.size(1)):
-                        sequence_buffer.append(images[:, cam_idx].squeeze(0).to(self.device))
+                        frame = images[:, cam_idx].squeeze(0).to(self.device)
+                        current_frames.append(frame)
                 else:
-                    sequence_buffer.append(images.squeeze(0).to(self.device))
+                    frame = images.squeeze(0).to(self.device)
+                    current_frames.append(frame)
                 
-                # Поддерживаем размер окна
+                # Обновляем буфер последовательности
+                sequence_buffer.extend(current_frames)
                 if len(sequence_buffer) > window_size * (2 if self.cfg.eval.use_both_cams else 1):
-                    sequence_buffer.pop(0)
+                    sequence_buffer = sequence_buffer[-(window_size * (2 if self.cfg.eval.use_both_cams else 1)):]
                 
-                # Candidate Pool Fusion
-                candidate_pool = []
+                # Получаем дескрипторы для всей последовательности
+                seq_descriptors = []
                 for frame in sequence_buffer:
-                    _, desc = self.model(frame.unsqueeze(0), None, mode='global')
-                    _, candidates = index.search(desc.cpu().numpy(), 
-                                            self.cfg.eval.refinetopcands)
-                    candidate_pool.extend(candidates[0])
+                    _, global_desc = self.model(frame.unsqueeze(0), None, mode='global')
+                    seq_descriptors.append(global_desc)
                 
-                # Удаляем дубликаты и выбираем лучший
-                unique_candidates = list(dict.fromkeys(candidate_pool))
-                if unique_candidates:
-                    best_candidate = self.select_best_candidate(sequence_buffer, 
-                                                            unique_candidates, 
-                                                            index)
+                # Усредняем дескрипторы последовательности
+                avg_seq_descriptor = torch.mean(torch.stack(seq_descriptors), dim=0)
+                
+                # Грубый поиск по глобальному дескриптору
+                _, top_k_indices = index.search(avg_seq_descriptor.cpu().numpy(), 
+                                            self.cfg.eval.refinetopcands)
+                
+                # Re-ranking с Pair-VPR
+                best_score = -float('inf')
+                best_candidate = 0
+                
+                for db_idx in top_k_indices[0]:
+                    # Получаем дескриптор из базы
+                    db_desc = torch.from_numpy(db_descriptors[db_idx]).unsqueeze(0).to(self.device)
+                    
+                    # Сравниваем с последовательностью
+                    total_score = 0.0
+                    for seq_desc in seq_descriptors:
+                        # Вычисляем score через Pair-VPR
+                        score = self.model(seq_desc, db_desc, mode="pairvpr")
+                        total_score += score.item()
+                    
+                    avg_score = total_score / len(seq_descriptors)
+                    
+                    if avg_score > best_score:
+                        best_score = avg_score
+                        best_candidate = db_idx
+                
+                # Для всех кадров в текущем батче используем лучший кандидат
+                for _ in current_frames:
                     all_predictions.append(best_candidate)
-                else:
-                    all_predictions.append(0)
         
         return all_predictions
     
