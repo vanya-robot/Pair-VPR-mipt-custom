@@ -50,60 +50,53 @@ class ITLPEvaluator:
                        std=[0.229, 0.224, 0.225])
         ])
     
-    def process_database_partitioned(self, db_path, save_path, num_parts=3):
+    def process_database(self, db_path, save_path):
         save_path = Path(save_path)
+        index_path = save_path / "faiss_index.bin"
+        positions_path = save_path / "positions.npy"
+        dense_features_path = save_path / "dense_features.pt"
+        
+        if all(p.exists() for p in [index_path, positions_path, dense_features_path]):
+            print("Loading precomputed database features...")
+            index = faiss.read_index(str(index_path))
+            db_positions = np.load(positions_path)
+            db_dense_features = torch.load(dense_features_path)
+            return index, db_positions, db_dense_features
+        
         db_loader = self.create_dataloader(db_path, is_database=True)
         
-        # Разбиваем датасет на части
-        total_batches = len(db_loader)
-        batches_per_part = total_batches // num_parts
+        db_descriptors = []
+        db_dense_features = []
+        db_positions = []
         
-        for part in range(num_parts):
-            part_path = save_path / f"part_{part}"
-            part_path.mkdir(exist_ok=True)
-            
-            start_idx = part * batches_per_part
-            end_idx = (part + 1) * batches_per_part if part != num_parts - 1 else total_batches
-            
-            db_descriptors = []
-            db_dense_features = []
-            db_positions = []
-            
-            with torch.no_grad():
-                for i, batch in enumerate(tqdm(db_loader, desc=f"Processing DB part {part+1}/{num_parts}")):
-                    if i < start_idx or i >= end_idx:
-                        continue
-                        
-                    images, positions = batch
-                    if self.cfg.eval.use_both_cams:
-                        for cam_idx in range(images.size(1)):
-                            cam_images = images[:, cam_idx]
-                            dense, descriptors = self.model(cam_images.to(self.device), None, mode='global')
-                            db_descriptors.append(descriptors.cpu())
-                            db_dense_features.append(dense.cpu())
-                        db_positions.append(positions.repeat_interleave(2, dim=0))
-                    else:
-                        dense, descriptors = self.model(images.to(self.device), None, mode='global')
+        with torch.no_grad():
+            for batch in tqdm(db_loader, desc="Processing database"):
+                images, positions = batch
+                if self.cfg.eval.use_both_cams:
+                    for cam_idx in range(images.size(1)):
+                        cam_images = images[:, cam_idx]
+                        dense, descriptors = self.model(cam_images.to(self.device), None, mode='global')
                         db_descriptors.append(descriptors.cpu())
                         db_dense_features.append(dense.cpu())
-                        db_positions.append(positions)
-            
-            # Сохраняем часть базы
-            db_descriptors = torch.cat(db_descriptors, dim=0).numpy()
-            db_positions = torch.cat(db_positions, dim=0).numpy()
-            db_dense_features = torch.cat(db_dense_features, dim=0)
-            
-            # Создаем и сохраняем индекс для части
-            index = faiss.IndexFlatL2(db_descriptors.shape[1])
-            index.add(db_descriptors)
-            
-            faiss.write_index(index, str(part_path / "faiss_index.bin"))
-            np.save(part_path / "positions.npy", db_positions)
-            torch.save(db_dense_features, part_path / "dense_features.pt")
-            
-            # Очистка памяти
-            del db_descriptors, db_positions, db_dense_features, index
-            torch.cuda.empty_cache()
+                    db_positions.append(positions.repeat_interleave(2, dim=0))
+                else:
+                    dense, descriptors = self.model(images.to(self.device), None, mode='global')
+                    db_descriptors.append(descriptors.cpu())
+                    db_dense_features.append(dense.cpu())
+                    db_positions.append(positions)
+        
+        db_descriptors = torch.cat(db_descriptors, dim=0).numpy()
+        db_positions = torch.cat(db_positions, dim=0).numpy()
+        db_dense_features = torch.cat(db_dense_features, dim=0)
+        
+        index = faiss.IndexFlatL2(db_descriptors.shape[1])
+        index.add(db_descriptors)
+        
+        faiss.write_index(index, str(index_path))
+        np.save(positions_path, db_positions)
+        torch.save(db_dense_features, dense_features_path)
+        
+        return index, db_positions, db_dense_features
 
     def save_database_index(self, index, positions, index_path, positions_path):
         """Сохраняет индекс FAISS и позиции в файлы"""
@@ -131,122 +124,87 @@ class ITLPEvaluator:
         print("Database index successfully loaded")
         return index, positions
     
-    def process_queries_partitioned(self, query_path, save_path, num_parts=3):
+    def extract_query_features(self, query_path, save_path):
+        """Извлекает и сохраняет признаки для запросов"""
         save_path = Path(save_path)
         query_loader = self.create_dataloader(query_path, is_database=False)
         
-        # Разбиваем запросы на части
-        total_batches = len(query_loader)
-        batches_per_part = total_batches // num_parts
+        # Пути для сохранения
+        query_index_path = save_path / "query_faiss_index.bin"
+        query_positions_path = save_path / "query_positions.npy"
+        query_dense_path = save_path / "query_dense_features.pt"
         
-        for part in range(num_parts):
-            part_path = save_path / f"part_{part}"
-            part_path.mkdir(exist_ok=True)
-            
-            start_idx = part * batches_per_part
-            end_idx = (part + 1) * batches_per_part if part != num_parts - 1 else total_batches
-            
-            query_descriptors = []
-            query_dense_features = []
-            query_positions = []
-            
-            with torch.no_grad():
-                for i, batch in enumerate(tqdm(query_loader, desc=f"Processing queries part {part+1}/{num_parts}")):
-                    if i < start_idx or i >= end_idx:
-                        continue
-                        
-                    images, positions = batch
-                    if self.cfg.eval.use_both_cams:
-                        for cam_idx in range(images.size(1)):
-                            cam_images = images[:, cam_idx]
-                            dense, descriptors = self.model(cam_images.to(self.device), None, mode='global')
-                            query_descriptors.append(descriptors.cpu())
-                            query_dense_features.append(dense.cpu())
-                        query_positions.append(positions.repeat_interleave(2, dim=0))
-                    else:
-                        dense, descriptors = self.model(images.to(self.device), None, mode='global')
+        if all(p.exists() for p in [query_index_path, query_positions_path, query_dense_path]):
+            print("Loading precomputed query features...")
+            query_index = faiss.read_index(str(query_index_path))
+            query_positions = np.load(query_positions_path)
+            query_dense = torch.load(query_dense_path)
+            return query_index, query_positions, query_dense
+        
+        query_descriptors = []
+        query_dense_features = []
+        query_positions = []
+        
+        with torch.no_grad():
+            for batch in tqdm(query_loader, desc="Extracting query features"):
+                images, positions = batch
+                if self.cfg.eval.use_both_cams:
+                    for cam_idx in range(images.size(1)):
+                        cam_images = images[:, cam_idx]
+                        dense, descriptors = self.model(cam_images.to(self.device), None, mode='global')
                         query_descriptors.append(descriptors.cpu())
                         query_dense_features.append(dense.cpu())
-                        query_positions.append(positions)
-            
-            # Сохраняем часть запросов
-            query_descriptors = torch.cat(query_descriptors, dim=0).numpy()
-            query_positions = torch.cat(query_positions, dim=0).numpy()
-            query_dense_features = torch.cat(query_dense_features, dim=0)
-            
-            # Создаем индекс для части запросов
-            index = faiss.IndexFlatL2(query_descriptors.shape[1])
-            index.add(query_descriptors)
-            
-            faiss.write_index(index, str(part_path / "query_faiss_index.bin"))
-            np.save(part_path / "query_positions.npy", query_positions)
-            torch.save(query_dense_features, part_path / "query_dense_features.pt")
-            
-            # Очистка памяти
-            del query_descriptors, query_positions, query_dense_features, index
-            torch.cuda.empty_cache()
+                    query_positions.append(positions.repeat_interleave(2, dim=0))
+                else:
+                    dense, descriptors = self.model(images.to(self.device), None, mode='global')
+                    query_descriptors.append(descriptors.cpu())
+                    query_dense_features.append(dense.cpu())
+                    query_positions.append(positions)
+        
+        query_descriptors = torch.cat(query_descriptors, dim=0).numpy()
+        query_positions = torch.cat(query_positions, dim=0).numpy()
+        query_dense_features = torch.cat(query_dense_features, dim=0)
+        
+        # Создаем индекс для запросов (может пригодиться для анализа)
+        query_index = faiss.IndexFlatL2(query_descriptors.shape[1])
+        query_index.add(query_descriptors)
+        
+        # Сохраняем все признаки
+        faiss.write_index(query_index, str(query_index_path))
+        np.save(query_positions_path, query_positions)
+        torch.save(query_dense_features, query_dense_path)
+        
+        return query_index, query_positions, query_dense_features
 
-    def compare_partitioned(self, db_base_path, query_base_path, save_path, top_k=250):
-        db_base_path = Path(db_base_path)
-        query_base_path = Path(query_base_path)
-        save_path = Path(save_path)
-        
-        # Найдем все части базы данных и запросов
-        db_parts = sorted(db_base_path.glob("part_*"))
-        query_parts = sorted(query_base_path.glob("part_*"))
-        
+    def compare_with_database(self, query_descriptors, query_dense, db_index, db_dense_features, top_k=250):
+        """Сравнивает запросы с базой данных"""
         all_predictions = []
         
-        for q_part in query_parts:
-            # Загружаем часть запросов
-            query_index = faiss.read_index(str(q_part / "query_faiss_index.bin"))
-            query_dense = torch.load(q_part / "query_dense_features.pt")
-            query_descriptors = query_index.reconstruct_n(0, query_index.ntotal)
-            
-            part_predictions = []
-            
-            for db_part in db_parts:
-                # Загружаем часть базы данных
-                db_index = faiss.read_index(str(db_part / "faiss_index.bin"))
-                db_dense = torch.load(db_part / "dense_features.pt")
-                
-                # Грубый поиск по глобальным дескрипторам
-                _, top_k_indices = db_index.search(query_descriptors, top_k)
-                
-                # Re-ranking с dense features
-                with torch.no_grad():
-                    for q_idx in range(len(query_descriptors)):
-                        q_dense = query_dense[q_idx].unsqueeze(0).to(self.device)
-                        best_score = -float('inf')
-                        best_candidate = 0
-                        
-                        for db_idx in top_k_indices[q_idx]:
-                            db_dense_part = db_dense[db_idx].unsqueeze(0).to(self.device)
-                            
-                            score1 = self.model(q_dense, db_dense_part, mode="pairvpr")
-                            score2 = self.model(db_dense_part, q_dense, mode="pairvpr")
-                            current_score = max(score1.item(), score2.item())
-                            
-                            if current_score > best_score:
-                                best_score = current_score
-                                best_candidate = db_idx
-                        
-                        part_predictions.append(best_candidate)
-                
-                # Очистка памяти
-                del db_index, db_dense
-                torch.cuda.empty_cache()
-            
-            all_predictions.extend(part_predictions)
-            
-            # Очистка памяти
-            del query_index, query_dense, query_descriptors
-            torch.cuda.empty_cache()
+        # Грубый поиск по глобальным дескрипторам
+        _, top_k_indices = db_index.search(query_descriptors, top_k)
         
-        # Сохранение финальных предсказаний
-        pred_path = save_path / 'submission.csv'
-        self.save_predictions(all_predictions, pred_path)
-        print(f"Predictions saved to {pred_path}")
+        with torch.no_grad():
+            for q_idx in tqdm(range(len(query_descriptors)), desc="Comparing queries with database"):
+                q_dense = query_dense[q_idx].unsqueeze(0).to(self.device)
+                best_score = -float('inf')
+                best_candidate = 0
+                
+                # Re-ranking с использованием dense features
+                for db_idx in top_k_indices[q_idx]:
+                    db_dense = db_dense_features[db_idx].unsqueeze(0).to(self.device)
+                    
+                    # Двунаправленное сравнение
+                    score1 = self.model(q_dense, db_dense, mode="pairvpr")
+                    score2 = self.model(db_dense, q_dense, mode="pairvpr")
+                    total_score = max(score1.item(), score2.item())
+                    
+                    if total_score > best_score:
+                        best_score = total_score
+                        best_candidate = db_idx
+                
+                all_predictions.append(best_candidate)
+        
+        return all_predictions
     
     def create_dataloader(self, data_path, is_database):
         dataset = ITLPDataset(
