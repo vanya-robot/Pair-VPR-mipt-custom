@@ -52,8 +52,8 @@ class ITLPEvaluator:
     
     def process_database(self, db_path):
         # Пути для сохранения
-        index_path = Path(db_path) / "faiss_index.bin"
-        positions_path = Path(db_path) / "positions.npy"
+        index_path = "faiss_index.bin"
+        positions_path = "positions.npy"
         
         # Пытаемся загрузить сохраненные данные
         if index_path.exists() and positions_path.exists():
@@ -102,8 +102,8 @@ class ITLPEvaluator:
         db_path = Path(db_path)
         db_path.mkdir(parents=True, exist_ok=True)
         
-        index_path = db_path / "faiss_index.bin"
-        positions_path = db_path / "positions.npy"
+        index_path = "faiss_index.bin"
+        positions_path = "positions.npy"
         
         print(f"Saving FAISS index to {index_path}...")
         faiss.write_index(index, str(index_path))
@@ -116,8 +116,8 @@ class ITLPEvaluator:
     def load_database_index(self, db_path):
         """Загружает сохраненный индекс FAISS и позиции"""
         db_path = Path(db_path)
-        index_path = db_path / "faiss_index.bin"
-        positions_path = db_path / "positions.npy"
+        index_path = "faiss_index.bin"
+        positions_path = "positions.npy"
         
         if not (index_path.exists() and positions_path.exists()):
             return None, None
