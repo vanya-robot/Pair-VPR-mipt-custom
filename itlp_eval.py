@@ -21,8 +21,8 @@ def parse_args():
                       help='Path to database directory (07_2023-10-04-day)')
     parser.add_argument('--query_path', type=str, required=True,
                       help='Path to queries directory (08_2023-10-11-night)')
-    parser.add_argument('--output', type=str, default='submission.csv',
-                      help='Output file path')
+    parser.add_argument('--save_path', type=str, default='/kaggle/working/',
+                      help='Output file path.')
     return parser.parse_args()
 
 class ITLPEvaluator:
@@ -52,8 +52,10 @@ class ITLPEvaluator:
     
     def process_database(self, db_path):
         # Пути для сохранения
-        index_path = "faiss_index.bin"
-        positions_path = "positions.npy"
+        save_path = Path(save_path)
+
+        index_path = save_path / "faiss_index.bin"
+        positions_path = save_path / "positions.npy"
         
         # Пытаемся загрузить сохраненные данные
         if index_path.exists() and positions_path.exists():
@@ -101,9 +103,10 @@ class ITLPEvaluator:
         """Сохраняет индекс FAISS и позиции в файлы"""
         db_path = Path(db_path)
         db_path.mkdir(parents=True, exist_ok=True)
+        save_path = Path(save_path)
         
-        index_path = "faiss_index.bin"
-        positions_path = "positions.npy"
+        index_path = save_path / "faiss_index.bin"
+        positions_path = save_path / "positions.npy"
         
         print(f"Saving FAISS index to {index_path}...")
         faiss.write_index(index, str(index_path))
@@ -116,8 +119,10 @@ class ITLPEvaluator:
     def load_database_index(self, db_path):
         """Загружает сохраненный индекс FAISS и позиции"""
         db_path = Path(db_path)
-        index_path = "faiss_index.bin"
-        positions_path = "positions.npy"
+        save_path = Path(save_path)
+
+        index_path = save_path / "faiss_index.bin"
+        positions_path = save_path / "positions.npy"
         
         if not (index_path.exists() and positions_path.exists()):
             return None, None
@@ -230,13 +235,17 @@ class ITLPEvaluator:
             num_workers=4
         )
     
-    def save_predictions(self, predictions, output_path):
-        with open(output_path, 'w') as f:
+    def save_predictions(self, predictions, save_path):
+        with open(save_path, 'w') as f:
             f.write("idx\n")
             for pred in predictions:
                 f.write(f"{pred}\n")
     
-    def evaluate(self, db_path, query_path, output_path):
+    def evaluate(self, db_path, query_path, save_path):
+        save_path = Path(save_path)
+
+        save_path = save_path / 'submission.csv'
+
         # Обработка базы данных
         index, db_positions = self.process_database(db_path)
         
@@ -244,9 +253,9 @@ class ITLPEvaluator:
         predictions = self.process_queries(query_path, index, db_positions)
         
         # Сохранение предсказаний
-        self.save_predictions(predictions, output_path)
+        self.save_predictions(predictions, save_path)
         
-        print(f"Predictions saved to {output_path}")
+        print(f"Predictions saved to {save_path}")
 
 class ITLPDataset(torch.utils.data.Dataset):
     def __init__(self, root_path, is_database, transform, use_both_cams):
@@ -304,5 +313,5 @@ if __name__ == "__main__":
     evaluator.evaluate(
         db_path=args.db_path,
         query_path=args.query_path,
-        output_path=args.output
+        save_path=args.save_path
     )
