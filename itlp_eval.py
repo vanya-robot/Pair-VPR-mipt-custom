@@ -145,10 +145,10 @@ class ITLPEvaluator:
                     # Обрабатываем каждую камеру отдельно
                     for cam_idx in range(images.size(1)):
                         # Берем кадр и добавляем размерность батча
-                        frame = images[:, cam_idx].unsqueeze(0)  # [1, C, H, W]
+                        frame = images[:, cam_idx]  # [B, C, H, W] - уже правильная размерность
                         current_frames.append(frame.to(self.device))
                 else:
-                    frame = images.unsqueeze(0)  # [1, C, H, W]
+                    frame = images  # [B, C, H, W]
                     current_frames.append(frame.to(self.device))
                 
                 # Обновляем буфер последовательности
@@ -159,7 +159,7 @@ class ITLPEvaluator:
                 # Получаем дескрипторы для всей последовательности
                 seq_descriptors = []
                 for frame in sequence_buffer:
-                    # frame уже имеет размер [1, C, H, W]
+                    # frame уже имеет размер [B, C, H, W]
                     _, global_desc = self.model(frame, None, mode='global')
                     seq_descriptors.append(global_desc)
                 
