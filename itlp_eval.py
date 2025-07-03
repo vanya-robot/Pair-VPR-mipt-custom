@@ -176,29 +176,29 @@ class ITLPEvaluator:
         
         return query_index, query_positions, query_dense_features
 
-def compare_with_database(self, query_descriptors, query_dense, db_index, db_dense_features, top_k=250):
-    """Сравнивает запросы с базой, выбирая лучший результат из двух камер"""
-    predictions = []
-    
-    # Обрабатываем запросы парами (передняя + задняя камеры)
-    for i in tqdm(range(0, len(query_descriptors), 2), desc="Processing camera pairs"):
-        if i+1 >= len(query_descriptors):
-            break
+    def compare_with_database(self, query_descriptors, query_dense, db_index, db_dense_features, top_k=250):
+        """Сравнивает запросы с базой, выбирая лучший результат из двух камер"""
+        predictions = []
+        
+        # Обрабатываем запросы парами (передняя + задняя камеры)
+        for i in tqdm(range(0, len(query_descriptors), 2), desc="Processing camera pairs"):
+            if i+1 >= len(query_descriptors):
+                break
+                
+            # Получаем дескрипторы для обеих камер
+            desc1 = query_descriptors[i]
+            desc2 = query_descriptors[i+1]
             
-        # Получаем дескрипторы для обеих камер
-        desc1 = query_descriptors[i]
-        desc2 = query_descriptors[i+1]
+            # Ищем лучший match для каждой камеры
+            _, top1 = db_index.search(desc1.reshape(1, -1), 1)
+            _, top2 = db_index.search(desc2.reshape(1, -1), 1)
+            
+            # просто берем первую
+            best_match = int(top1[0][0])
+            
+            predictions.append(best_match)
         
-        # Ищем лучший match для каждой камеры
-        _, top1 = db_index.search(desc1.reshape(1, -1), 1)
-        _, top2 = db_index.search(desc2.reshape(1, -1), 1)
-        
-        # просто берем первую
-        best_match = int(top1[0][0])
-        
-        predictions.append(best_match)
-    
-    return predictions
+        return predictions
     
     def create_dataloader(self, data_path, is_database):
         dataset = ITLPDataset(
