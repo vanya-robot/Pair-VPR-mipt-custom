@@ -176,69 +176,29 @@ class ITLPEvaluator:
         
         return query_index, query_positions, query_dense_features
 
-    def compare_with_database(self, query_descriptors, query_dense, db_index, db_dense_features, top_k=250):
-        """Сравнивает запросы с базой, выбирая лучший результат из двух камер"""
-        predictions = []
+def compare_with_database(self, query_descriptors, query_dense, db_index, db_dense_features, top_k=250):
+    """Сравнивает запросы с базой, выбирая лучший результат из двух камер"""
+    predictions = []
+    
+    # Обрабатываем запросы парами (передняя + задняя камеры)
+    for i in tqdm(range(0, len(query_descriptors), 2), desc="Processing camera pairs"):
+        if i+1 >= len(query_descriptors):
+            break
+            
+        # Получаем дескрипторы для обеих камер
+        desc1 = query_descriptors[i]
+        desc2 = query_descriptors[i+1]
         
-        # Обрабатываем запросы парами (передняя + задняя камеры)
-        for i in tqdm(range(0, len(query_descriptors), 2), desc="Processing camera pairs"):
-            if i+1 >= len(query_descriptors):
-                break
-                
-            # Получаем дескрипторы и dense features для обеих камер
-            desc1 = query_descriptors[i]
-            desc2 = query_descriptors[i+1]
-            dense1 = query_dense[i]
-            dense2 = query_dense[i+1]
-            
-            # Ищем топ-K кандидатов для каждой камеры
-            _, top1_indices = db_index.search(desc1.reshape(1, -1), top_k)
-            _, top2_indices = db_index.search(desc2.reshape(1, -1), top_k)
-            
-            # Лучший результат для первой камеры
-            best_score1 = -float('inf')
-            best_match1 = 0
-            for db_idx in top1_indices[0]:
-                print(db_dense_features[db_idx].shape)
-                db_dense = db_dense_features[db_idx].to(self.device)
-                print('db after:', db_dense.shape)
-                print(dense2.shape)
-                current_dense = dense1.to(self.device)
-                print('cur after:', current_dense.shape)
-                
-                score1 = self.model(current_dense, db_dense, mode="pairvpr")
-                score2 = self.model(db_dense, current_dense, mode="pairvpr")
-                current_score = max(score1.item(), score2.item())
-                
-                if current_score > best_score1:
-                    best_score1 = current_score
-                    best_match1 = db_idx
-            
-            # Лучший результат для второй камеры
-            best_score2 = -float('inf')
-            best_match2 = 0
-            for db_idx in top2_indices[0]:
-                
-                db_dense = db_dense_features[db_idx].to(self.device)
-
-                current_dense = dense2.to(self.device)
-
-                
-                score1 = self.model(current_dense, db_dense, mode="pairvpr")
-                score2 = self.model(db_dense, current_dense, mode="pairvpr")
-                current_score = max(score1.item(), score2.item())
-                
-                if current_score > best_score2:
-                    best_score2 = current_score
-                    best_match2 = db_idx
-            
-            # Выбираем камеру с лучшим сходством
-            if best_score1 > best_score2:
-                predictions.append(best_match1)
-            else:
-                predictions.append(best_match2)
+        # Ищем лучший match для каждой камеры
+        _, top1 = db_index.search(desc1.reshape(1, -1), 1)
+        _, top2 = db_index.search(desc2.reshape(1, -1), 1)
         
-        return predictions
+        # просто берем первую
+        best_match = int(top1[0][0])
+        
+        predictions.append(best_match)
+    
+    return predictions
     
     def create_dataloader(self, data_path, is_database):
         dataset = ITLPDataset(
