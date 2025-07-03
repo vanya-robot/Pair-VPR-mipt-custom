@@ -124,86 +124,87 @@ class ITLPEvaluator:
         print("Database index successfully loaded")
         return index, positions
     
-    def process_queries(self, query_path, index, db_positions, db_dense_features):
+    def extract_query_features(self, query_path, save_path):
+        """Извлекает и сохраняет признаки для запросов"""
+        save_path = Path(save_path)
         query_loader = self.create_dataloader(query_path, is_database=False)
-        all_predictions = []
-        sequence_buffer = []
         
-        # Размер последовательности (3 кадра * 2 камеры = 6 изображений)
-        seq_length = 3 * (2 if self.cfg.eval.use_both_cams else 1)
+        # Пути для сохранения
+        query_index_path = save_path / "query_faiss_index.bin"
+        query_positions_path = save_path / "query_positions.npy"
+        query_dense_path = save_path / "query_dense_features.pt"
+        
+        if all(p.exists() for p in [query_index_path, query_positions_path, query_dense_path]):
+            print("Loading precomputed query features...")
+            query_index = faiss.read_index(str(query_index_path))
+            query_positions = np.load(query_positions_path)
+            query_dense = torch.load(query_dense_path)
+            return query_index, query_positions, query_dense
+        
+        query_descriptors = []
+        query_dense_features = []
+        query_positions = []
         
         with torch.no_grad():
-            for batch in tqdm(query_loader, desc="Processing queries"):
-                images, _ = batch
-                current_frames = []
-                
+            for batch in tqdm(query_loader, desc="Extracting query features"):
+                images, positions = batch
                 if self.cfg.eval.use_both_cams:
                     for cam_idx in range(images.size(1)):
-                        frame = images[:, cam_idx]  # [B, C, H, W]
-                        current_frames.append(frame.to(self.device))
+                        cam_images = images[:, cam_idx]
+                        dense, descriptors = self.model(cam_images.to(self.device), None, mode='global')
+                        query_descriptors.append(descriptors.cpu())
+                        query_dense_features.append(dense.cpu())
+                    query_positions.append(positions.repeat_interleave(2, dim=0))
                 else:
-                    current_frames.append(images.to(self.device))
-                
-                # Обновляем буфер последовательности
-                sequence_buffer.extend(current_frames)
-                if len(sequence_buffer) > seq_length:
-                    sequence_buffer = sequence_buffer[-seq_length:]
-                
-                # Получаем признаки для всей последовательности
-                seq_global_descs = []
-                seq_dense_features = []
-                
-                for frame in sequence_buffer:
-                    dense, global_desc = self.model(frame, None, mode='global')
-                    seq_global_descs.append(global_desc)
-                    seq_dense_features.append(dense)
-                
-                # Усредняем глобальные дескрипторы для грубого поиска
-                avg_global_desc = torch.mean(torch.stack(seq_global_descs), dim=0)
-                
-                # Грубый поиск по глобальным дескрипторам
-                _, top_k_indices = index.search(avg_global_desc.cpu().numpy(), 
-                                             self.cfg.eval.refinetopcands)
-                
-                # Re-ranking с использованием dense features
+                    dense, descriptors = self.model(images.to(self.device), None, mode='global')
+                    query_descriptors.append(descriptors.cpu())
+                    query_dense_features.append(dense.cpu())
+                    query_positions.append(positions)
+        
+        query_descriptors = torch.cat(query_descriptors, dim=0).numpy()
+        query_positions = torch.cat(query_positions, dim=0).numpy()
+        query_dense_features = torch.cat(query_dense_features, dim=0)
+        
+        # Создаем индекс для запросов (может пригодиться для анализа)
+        query_index = faiss.IndexFlatL2(query_descriptors.shape[1])
+        query_index.add(query_descriptors)
+        
+        # Сохраняем все признаки
+        faiss.write_index(query_index, str(query_index_path))
+        np.save(query_positions_path, query_positions)
+        torch.save(query_dense_features, query_dense_path)
+        
+        return query_index, query_positions, query_dense_features
+
+    def compare_with_database(self, query_descriptors, query_dense, db_index, db_dense_features, top_k=250):
+        """Сравнивает запросы с базой данных с выбором максимального score из двух направлений"""
+        all_predictions = []
+        
+        # Грубый поиск по глобальным дескрипторам
+        _, top_k_indices = db_index.search(query_descriptors, top_k)
+        
+        with torch.no_grad():
+            for q_idx in tqdm(range(len(query_descriptors)), desc="Comparing queries with database"):
+                q_dense = query_dense[q_idx].unsqueeze(0).to(self.device)
                 best_score = -float('inf')
                 best_candidate = 0
                 
-                for db_idx in top_k_indices[0]:
+                # Re-ranking с использованием dense features
+                for db_idx in top_k_indices[q_idx]:
                     db_dense = db_dense_features[db_idx].unsqueeze(0).to(self.device)
                     
-                    total_score = 0.0
-                    for seq_dense in seq_dense_features:
-                        # Сравниваем query и candidate в обоих направлениях
-                        score1 = self.model(seq_dense, db_dense, mode="pairvpr")
-                        score2 = self.model(db_dense, seq_dense, mode="pairvpr")
-                        total_score += (score1.item() + score2.item()) / 2
+                    # Двунаправленное сравнение с выбором максимального score
+                    score1 = self.model(q_dense, db_dense, mode="pairvpr")
+                    score2 = self.model(db_dense, q_dense, mode="pairvpr")
+                    current_score = max(score1.item(), score2.item())  # Выбираем максимальный score
                     
-                    avg_score = total_score / len(seq_dense_features)
-                    
-                    if avg_score > best_score:
-                        best_score = avg_score
+                    if current_score > best_score:
+                        best_score = current_score
                         best_candidate = db_idx
                 
-                # Сохраняем предсказания для всех кадров в текущем батче
-                all_predictions.extend([best_candidate] * len(current_frames))
+                all_predictions.append(best_candidate)
         
         return all_predictions
-    
-    def select_best_candidate(self, sequence, candidates, index):
-        """Выбирает лучший кандидат на основе среднего расстояния"""
-        # Получаем дескрипторы для всей последовательности
-        seq_descriptors = []
-        for frame in sequence:
-            _, desc = self.model(frame.unsqueeze(0), None, mode='global')
-            seq_descriptors.append(desc.cpu().numpy())
-        seq_descriptors = np.mean(seq_descriptors, axis=0)
-        
-        # Вычисляем расстояния для кандидатов
-        candidate_descriptors = index.reconstruct_batch(candidates)
-        distances = np.linalg.norm(seq_descriptors - candidate_descriptors, axis=1)
-        
-        return candidates[np.argmin(distances)]
     
     def create_dataloader(self, data_path, is_database):
         dataset = ITLPDataset(
@@ -228,12 +229,21 @@ class ITLPEvaluator:
     def evaluate(self, db_path, query_path, save_path):
         save_path = Path(save_path)
         pred_path = save_path / 'submission.csv'
-
-        # Обработка базы данных
-        index, db_positions = self.process_database(db_path, save_path)
         
-        # Обработка запросов с Candidate Pool Fusion
-        predictions = self.process_queries(query_path, index, db_positions)
+        # Обработка базы данных
+        db_index, db_positions, db_dense = self.process_database(db_path, save_path)
+        
+        # Извлечение признаков запросов
+        query_index, query_positions, query_dense = self.extract_query_features(query_path, save_path)
+        
+        # Сравнение запросов с базой
+        predictions = self.compare_with_database(
+            query_index.reconstruct_n(0, query_index.ntotal),
+            query_dense,
+            db_index,
+            db_dense,
+            top_k=250
+        )
         
         # Сохранение предсказаний
         self.save_predictions(predictions, pred_path)
