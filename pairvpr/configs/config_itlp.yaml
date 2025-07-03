@@ -22,5 +22,6 @@ eval:
   memoryeffmode: false
   sequence_window: 3  # Размер окна для последовательности
   use_both_cams: true  # Использовать обе камеры
+  batch_size: 32
 dataset_locations:
   itlp: "itlp_dataset"  # Фиктивный путь, будет переопределен
