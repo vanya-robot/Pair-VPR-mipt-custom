@@ -18,7 +18,7 @@ def get_args_parser():
     parser.add_argument("--config", type=str, required=True, help="Path to config file")
     parser.add_argument("--db_path", type=str, required=True, help="Path to database directory")
     parser.add_argument("--query_path", type=str, required=True, help="Path to queries directory")
-    parser.add_argument("--save_path", type=str, default="./results", help="Output directory")
+    parser.add_argument("--save_path", type=str, default="/kaggle/working/", help="Output directory")
     parser.add_argument("--batch_size", type=int, default=32, help="Batch size for processing")
     parser.add_argument("--top_k", type=int, default=250, help="Number of candidates for re-ranking")
     return parser
